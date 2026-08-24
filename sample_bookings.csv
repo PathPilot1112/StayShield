@@ -1,0 +1,6 @@
+guest_name,phone,email,room_type,check_in,check_out,amount,payment_status,source_channel,booking_date
+Jane Smith,1-555-0123,jane.smith@gmail.com,Standard Room,2026-09-01,2026-09-05,600.00,Paid,Booking.com,2026-08-20
+Placeholder Account,1-555-0144,test@placeholder.com,Deluxe Suite,2026-09-10,2026-09-15,1250.00,Pending,Expedia,2026-08-24
+Double Booking Guest,1-555-0155,double@gmail.com,Standard Room,2026-09-01,2026-09-04,450.00,Unpaid,Airbnb,2026-08-24
+Vip Guest,1-555-9999,vip@noble.com,Presidential Suite,2026-09-12,2026-09-18,6500.00,Paid,Direct,2026-08-22
+Test Booking,1-555-0000,test.guest@gmail.com,Standard Room,2026-09-15,2026-09-17,-100.00,Unpaid,Booking.com,2026-08-24
