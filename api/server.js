@@ -43,6 +43,66 @@ async function runMigrations() {
 }
 runMigrations();
 
+// In-Memory Active Cache Layer
+const activeCache = {
+  bookings: {}, // will store keys like `All`, `Open`, `Resolved`
+  recovery: null
+};
+
+function invalidateCache() {
+  activeCache.bookings = {};
+  activeCache.recovery = null;
+  logEvent('INFO', 'Active cache invalidated due to data modification.');
+}
+
+// Background Connection Monitor
+let lastDbConnected = true;
+let lastMlConnected = true;
+
+setInterval(async () => {
+  // 1. Check DB
+  let dbConnected = false;
+  try {
+    const res = await pool.query('SELECT 1');
+    if (res.rowCount > 0) dbConnected = true;
+  } catch (e) {
+    dbConnected = false;
+  }
+
+  if (dbConnected !== lastDbConnected) {
+    if (dbConnected) {
+      logEvent('INFO', 'Database connection RESTORED.');
+    } else {
+      logEvent('ERROR', 'Database connection LOST!');
+    }
+    lastDbConnected = dbConnected;
+  }
+
+  // 2. Check ML Scorer
+  let mlConnected = false;
+  try {
+    const mlUrl = process.env.ML_URL || 'http://ml:8000';
+    const ping = await fetch(`${mlUrl}/score`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ guest_name: 'ping' })
+    });
+    if (ping.ok) mlConnected = true;
+  } catch (e) {
+    mlConnected = false;
+  }
+
+  if (mlConnected !== lastMlConnected) {
+    if (mlConnected) {
+      logEvent('INFO', 'ML scoring service connection RESTORED.');
+    } else {
+      logEvent('ERROR', 'ML scoring service connection LOST! Offline mode active.');
+    }
+    lastMlConnected = mlConnected;
+  }
+}, 10000);
+
+
 // Multer memory storage for file uploads
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -112,6 +172,16 @@ app.post('/api/bookings/upload', upload.single('file'), async (req, res) => {
       const insertedBookings = [];
 
       for (const row of records) {
+        // Deduplication Check
+        const dupCheck = await pool.query(
+          "SELECT 1 FROM bookings WHERE guest_name = $1 AND check_in = $2 AND check_out = $3 AND room_type = $4 LIMIT 1",
+          [row.guest_name, row.check_in, row.check_out, row.room_type]
+        );
+        if (dupCheck.rowCount > 0) {
+          logEvent('INFO', `Skipped duplicate booking for Guest: ${row.guest_name}, Room: ${row.room_type}, Dates: ${row.check_in} to ${row.check_out}`);
+          continue;
+        }
+
         // Find overlap inside DB or previously in this CSV batch
         let has_overlap = false;
         
@@ -202,6 +272,9 @@ app.post('/api/bookings/upload', upload.single('file'), async (req, res) => {
         activeBookings.push(insertRes.rows[0]);
       }
 
+      if (insertedBookings.length > 0) {
+        invalidateCache();
+      }
       logEvent('INFO', `Successfully imported and scored ${insertedBookings.length} bookings.`);
       res.json({ success: true, count: insertedBookings.length, bookings: insertedBookings });
     } catch (dbErr) {
@@ -211,10 +284,137 @@ app.post('/api/bookings/upload', upload.single('file'), async (req, res) => {
   });
 });
 
+// 9. POST /api/bookings/manual (Manual Booking Entry)
+app.post('/api/bookings/manual', async (req, res) => {
+  const row = req.body;
+  
+  if (!row.guest_name || !row.check_in || !row.check_out || !row.room_type || !row.amount) {
+    return res.status(400).json({ error: 'Missing required booking fields (guest_name, check_in, check_out, room_type, amount)' });
+  }
+
+  logEvent('INFO', `Manual booking entry request received. Guest: ${row.guest_name}`);
+
+  try {
+    // 1. Deduplication Check
+    const dupCheck = await pool.query(
+      "SELECT 1 FROM bookings WHERE guest_name = $1 AND check_in = $2 AND check_out = $3 AND room_type = $4 LIMIT 1",
+      [row.guest_name, row.check_in, row.check_out, row.room_type]
+    );
+    if (dupCheck.rowCount > 0) {
+      logEvent('INFO', `Manual entry skipped. Booking already exists for Guest: ${row.guest_name}`);
+      return res.status(409).json({ error: 'Booking already exists.' });
+    }
+
+    // 2. Check overlap
+    const existingRes = await pool.query(
+      "SELECT id, room_type, check_in, check_out FROM bookings WHERE status != 'Resolved'"
+    );
+    const activeBookings = existingRes.rows;
+
+    let has_overlap = false;
+    for (const existing of activeBookings) {
+      if (checkOverlap(row, existing)) {
+        has_overlap = true;
+        break;
+      }
+    }
+
+    // 3. Call ML Scorer
+    let mlResponse = {
+      risk_level: 'Low',
+      risk_score: 0,
+      top_reason: 'ML Scorer offline fallback',
+      recommended_action: 'Standard welcome protocol',
+      deadline: row.check_in,
+      confidence_score: 100
+    };
+
+    const scoreStartTime = Date.now();
+    logEvent('ML_REQUEST', `Scoring manual booking for ${row.guest_name}`, { guest: row.guest_name, has_overlap });
+
+    try {
+      const mlUrl = process.env.ML_URL || 'http://ml:8000';
+      const scoreRes = await fetch(`${mlUrl}/score`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...row, has_overlap })
+      });
+
+      const latency = Date.now() - scoreStartTime;
+
+      if (scoreRes.ok) {
+        mlResponse = await scoreRes.json();
+        logEvent('ML_RESPONSE', `Scored manual booking ${row.guest_name} successfully. Risk: ${mlResponse.risk_level} (${mlResponse.risk_score}), Confidence: ${mlResponse.confidence_score}%. Latency: ${latency}ms`, { guest: row.guest_name, risk: mlResponse.risk_level, score: mlResponse.risk_score, confidence: mlResponse.confidence_score });
+      } else {
+        logEvent('ERROR', `ML Scorer returned status: ${scoreRes.status} for manual guest ${row.guest_name}`);
+      }
+    } catch (mlErr) {
+      logEvent('ERROR', `Error connecting to ML service for manual guest ${row.guest_name}: ${mlErr.message}`);
+    }
+
+    // 4. Insert into Postgres
+    const insertQuery = `
+      INSERT INTO bookings (
+        guest_name, phone, email, room_type, check_in, check_out, amount, 
+        payment_status, source_channel, booking_date, risk_level, risk_score, 
+        top_reason, recommended_action, deadline, confidence_score, status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+      RETURNING *
+    `;
+
+    const values = [
+      row.guest_name,
+      row.phone || '',
+      row.email || '',
+      row.room_type,
+      row.check_in,
+      row.check_out,
+      parseFloat(row.amount),
+      row.payment_status || 'Unpaid',
+      row.source_channel || 'Manual',
+      row.booking_date || new Date().toISOString().split('T')[0],
+      mlResponse.risk_level,
+      mlResponse.risk_score,
+      mlResponse.top_reason,
+      mlResponse.recommended_action,
+      mlResponse.deadline,
+      mlResponse.confidence_score || 100,
+      'Open'
+    ];
+
+    const insertRes = await pool.query(insertQuery, values);
+    
+    // Invalidate caches
+    invalidateCache();
+    logEvent('INFO', `Successfully inserted manual booking for ${row.guest_name}.`);
+    res.json({ success: true, booking: insertRes.rows[0] });
+
+  } catch (dbErr) {
+    logEvent('ERROR', `Database error inserting manual booking for ${row.guest_name}`, { error: dbErr.message });
+    res.status(500).json({ error: 'Failed to save manual booking' });
+  }
+});
+
+// 10. Health Check Endpoint (Render / Load Balancer)
+app.get('/health', async (req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.json({ status: 'healthy', database: 'connected' });
+  } catch (err) {
+    logEvent('ERROR', 'Health check failed: database disconnected', { error: err.message });
+    res.status(500).json({ status: 'unhealthy', error: err.message });
+  }
+});
+
 // 3. GET /api/bookings
 app.get('/api/bookings', async (req, res) => {
   const { status, sort } = req.query;
   
+  const cacheKey = `${status || 'All'}_${sort || 'default'}`;
+  if (activeCache.bookings[cacheKey]) {
+    return res.json(activeCache.bookings[cacheKey]);
+  }
+
   let queryText = 'SELECT * FROM bookings';
   const queryParams = [];
 
@@ -231,6 +431,7 @@ app.get('/api/bookings', async (req, res) => {
 
   try {
     const dbRes = await pool.query(queryText, queryParams);
+    activeCache.bookings[cacheKey] = dbRes.rows;
     res.json(dbRes.rows);
   } catch (err) {
     console.error('Error fetching bookings:', err);
@@ -257,6 +458,7 @@ app.patch('/api/bookings/:id', async (req, res) => {
       return res.status(404).json({ error: 'Booking not found' });
     }
 
+    invalidateCache();
     res.json(dbRes.rows[0]);
   } catch (err) {
     console.error('Error updating status:', err);
@@ -278,6 +480,7 @@ app.post('/api/bookings/bulk-resolve', async (req, res) => {
       ['Resolved', bookingIds]
     );
 
+    invalidateCache();
     res.json({ success: true, count: dbRes.rowCount, bookings: dbRes.rows });
   } catch (err) {
     console.error('Error bulk-resolving bookings:', err);
@@ -385,6 +588,10 @@ app.get('/api/duplicates', async (req, res) => {
 
 // 7. GET /api/recovery-summary
 app.get('/api/recovery-summary', async (req, res) => {
+  if (activeCache.recovery) {
+    return res.json(activeCache.recovery);
+  }
+
   try {
     // Current calendar month check-in filter
     const now = new Date();
@@ -418,10 +625,13 @@ app.get('/api/recovery-summary', async (req, res) => {
       amount: parseFloat(b.amount)
     }));
 
-    res.json({
+    const responsePayload = {
       totalRecovered,
       bookings: recoveryList
-    });
+    };
+
+    activeCache.recovery = responsePayload;
+    res.json(responsePayload);
   } catch (err) {
     console.error('Error fetching recovery summary:', err);
     res.status(500).json({ error: 'Failed to retrieve recovery data' });

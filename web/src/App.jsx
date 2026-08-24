@@ -193,6 +193,20 @@ export default function App() {
   const [uploadSuccess, setUploadSuccess] = useState(null);
   const [uploadError, setUploadError] = useState(null);
 
+  // Manual booking states
+  const [isManualModalOpen, setIsManualModalOpen] = useState(false);
+  const [manualGuestName, setManualGuestName] = useState('');
+  const [manualPhone, setManualPhone] = useState('');
+  const [manualEmail, setManualEmail] = useState('');
+  const [manualRoomType, setManualRoomType] = useState('Deluxe');
+  const [manualCheckIn, setManualCheckIn] = useState('');
+  const [manualCheckOut, setManualCheckOut] = useState('');
+  const [manualAmount, setManualAmount] = useState('');
+  const [manualPaymentStatus, setManualPaymentStatus] = useState('Unpaid');
+  const [manualSourceChannel, setManualSourceChannel] = useState('Phone Call');
+  const [manualError, setManualError] = useState('');
+  const [manualSuccess, setManualSuccess] = useState('');
+
   // Sync route state with address bar
   useEffect(() => {
     const handlePopState = () => {
@@ -385,6 +399,58 @@ export default function App() {
     }
   };
 
+  const handleManualBookingSubmit = async (e) => {
+    e.preventDefault();
+    setManualError('');
+    setManualSuccess('');
+
+    const payload = {
+      guest_name: manualGuestName,
+      phone: manualPhone,
+      email: manualEmail,
+      room_type: manualRoomType,
+      check_in: manualCheckIn,
+      check_out: manualCheckOut,
+      amount: parseFloat(manualAmount),
+      payment_status: manualPaymentStatus,
+      source_channel: manualSourceChannel
+    };
+
+    try {
+      const res = await fetch('/api/bookings/manual', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setManualSuccess('Booking successfully created!');
+        setManualGuestName('');
+        setManualPhone('');
+        setManualEmail('');
+        setManualRoomType('Deluxe');
+        setManualCheckIn('');
+        setManualCheckOut('');
+        setManualAmount('');
+        setManualPaymentStatus('Unpaid');
+        setManualSourceChannel('Phone Call');
+        
+        fetchBookings();
+        fetchDuplicates();
+        fetchRecoverySummary();
+
+        setTimeout(() => {
+          setIsManualModalOpen(false);
+          setManualSuccess('');
+        }, 1500);
+      } else {
+        setManualError(data.error || 'Failed to create booking.');
+      }
+    } catch (err) {
+      setManualError('Network error. Check connection to backend.');
+    }
+  };
+
   // Auth gate
   if (!user) {
     return (
@@ -573,13 +639,21 @@ export default function App() {
                 <h2 className="text-2xl font-bold tracking-tight text-slate-900">Inbox</h2>
                 <p className="text-xs text-slate-500 mt-0.5">Booking Risk inbox</p>
               </div>
-              <button 
-                onClick={() => setIsUploadModalOpen(true)}
-                className="flex items-center gap-2 px-4 py-2 bg-black text-white hover:bg-slate-800 text-sm font-semibold rounded-lg shadow-sm transition-colors"
-              >
-                <Upload className="h-4 w-4" />
-                <span>CSV Upload</span>
-              </button>
+              <div className="flex items-center gap-3">
+                <button 
+                  onClick={() => setIsManualModalOpen(true)}
+                  className="flex items-center gap-2 px-4 py-2 border border-slate-200 hover:border-slate-350 hover:bg-slate-50 text-slate-700 text-sm font-semibold rounded-lg transition-colors"
+                >
+                  <span>New Booking</span>
+                </button>
+                <button 
+                  onClick={() => setIsUploadModalOpen(true)}
+                  className="flex items-center gap-2 px-4 py-2 bg-black text-white hover:bg-slate-800 text-sm font-semibold rounded-lg shadow-sm transition-colors"
+                >
+                  <Upload className="h-4 w-4" />
+                  <span>CSV Upload</span>
+                </button>
+              </div>
             </div>
 
             {/* Filter & Sort Controls */}
@@ -1059,6 +1133,171 @@ export default function App() {
                   disabled={!uploadFile || uploading}
                 >
                   {uploading ? 'Processing...' : 'Upload & Parse'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Manual Booking Modal */}
+      {isManualModalOpen && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white rounded-xl shadow-xl max-w-lg w-full overflow-hidden border border-slate-200">
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+              <h3 className="font-bold text-slate-900 text-sm">Add New Booking</h3>
+              <button 
+                onClick={() => {
+                  setIsManualModalOpen(false);
+                  setManualError('');
+                  setManualSuccess('');
+                }}
+                className="text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleManualBookingSubmit} className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
+              {manualError && (
+                <div className="p-3 bg-red-50 border border-red-200 text-red-600 rounded-lg text-xs flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  <span>{manualError}</span>
+                </div>
+              )}
+
+              {manualSuccess && (
+                <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-lg text-xs flex items-center gap-2">
+                  <Check className="h-4 w-4 shrink-0" />
+                  <span>{manualSuccess}</span>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="col-span-2">
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Guest Name *</label>
+                  <input 
+                    type="text" 
+                    value={manualGuestName}
+                    onChange={(e) => setManualGuestName(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-black text-xs"
+                    placeholder="Guest Full Name"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Phone</label>
+                  <input 
+                    type="text" 
+                    value={manualPhone}
+                    onChange={(e) => setManualPhone(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-black text-xs"
+                    placeholder="+1 555-0199"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Email</label>
+                  <input 
+                    type="email" 
+                    value={manualEmail}
+                    onChange={(e) => setManualEmail(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-black text-xs"
+                    placeholder="guest@example.com"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Room Type *</label>
+                  <input 
+                    type="text" 
+                    value={manualRoomType}
+                    onChange={(e) => setManualRoomType(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-black text-xs"
+                    placeholder="e.g. Deluxe, Standard"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Booking Amount ($) *</label>
+                  <input 
+                    type="number" 
+                    step="0.01"
+                    value={manualAmount}
+                    onChange={(e) => setManualAmount(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-black text-xs"
+                    placeholder="250.00"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Check-in Date *</label>
+                  <input 
+                    type="date" 
+                    value={manualCheckIn}
+                    onChange={(e) => setManualCheckIn(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-black text-xs"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Check-out Date *</label>
+                  <input 
+                    type="date" 
+                    value={manualCheckOut}
+                    onChange={(e) => setManualCheckOut(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-black text-xs"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Payment Status *</label>
+                  <select 
+                    value={manualPaymentStatus}
+                    onChange={(e) => setManualPaymentStatus(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-black text-xs bg-white"
+                  >
+                    <option value="Unpaid">Unpaid</option>
+                    <option value="Paid">Paid</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Source Channel *</label>
+                  <select 
+                    value={manualSourceChannel}
+                    onChange={(e) => setManualSourceChannel(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-black text-xs bg-white"
+                  >
+                    <option value="Phone Call">Phone Call</option>
+                    <option value="Direct Email">Direct Email</option>
+                    <option value="Walk-in">Walk-in</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100 mt-6">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsManualModalOpen(false);
+                    setManualError('');
+                    setManualSuccess('');
+                  }}
+                  className="px-4 py-2 border border-slate-200 hover:bg-slate-50 text-xs font-semibold rounded-lg text-slate-700 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-black text-white hover:bg-slate-800 text-xs font-semibold rounded-lg transition-colors flex items-center gap-2 shadow-xs"
+                >
+                  Save Booking
                 </button>
               </div>
             </form>
