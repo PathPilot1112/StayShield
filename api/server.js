@@ -61,9 +61,43 @@ async function runMigrations() {
       );
     `);
 
-    // 3. Alter bookings table
+    // 3. Create bookings table if not exists
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bookings (
+        id SERIAL PRIMARY KEY,
+        hotel_id INT REFERENCES hotels(id) ON DELETE SET NULL,
+        guest_name VARCHAR(255) NOT NULL,
+        phone VARCHAR(50) NOT NULL,
+        email VARCHAR(255) NOT NULL,
+        room_type VARCHAR(100) NOT NULL,
+        check_in DATE NOT NULL,
+        check_out DATE NOT NULL,
+        amount NUMERIC(10, 2) NOT NULL,
+        payment_status VARCHAR(50) NOT NULL,
+        source_channel VARCHAR(100) NOT NULL,
+        booking_date DATE NOT NULL,
+        risk_level VARCHAR(20),
+        risk_score INT,
+        top_reason VARCHAR(255),
+        recommended_action VARCHAR(255),
+        deadline DATE,
+        confidence_score INT DEFAULT 100,
+        status VARCHAR(20) DEFAULT 'Open',
+        cluster_id VARCHAR(50),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Alter bookings in case it already existed but is missing columns
     await pool.query("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS confidence_score INT DEFAULT 100;");
     await pool.query("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS hotel_id INT REFERENCES hotels(id) ON DELETE SET NULL;");
+
+    // Create indexes if they do not exist
+    await pool.query("CREATE INDEX IF NOT EXISTS idx_bookings_phone ON bookings(phone);");
+    await pool.query("CREATE INDEX IF NOT EXISTS idx_bookings_email ON bookings(email);");
+    await pool.query("CREATE INDEX IF NOT EXISTS idx_bookings_room_type ON bookings(room_type);");
+    await pool.query("CREATE INDEX IF NOT EXISTS idx_bookings_status ON bookings(status);");
+    await pool.query("CREATE INDEX IF NOT EXISTS idx_bookings_hotel_id ON bookings(hotel_id);");
 
     // 4. Seed Bihar hotels
     const hotelsCount = await pool.query("SELECT COUNT(*) FROM hotels");
@@ -976,6 +1010,24 @@ app.get('/api/diagnostics/logs', async (req, res) => {
 });
 
 const { seedData } = require('./seed');
+
+// 12. Render Free-Tier Keep-Alive Self-Pinger
+if (process.env.SELF_PING_URL) {
+  const pingInterval = 10 * 60 * 1000; // 10 minutes
+  setInterval(async () => {
+    try {
+      await fetch(`${process.env.SELF_PING_URL}/health`);
+      logEvent('INFO', `Render Keep-Alive: Pinged self at ${process.env.SELF_PING_URL}/health`);
+      
+      if (process.env.ML_PING_URL) {
+        await fetch(`${process.env.ML_PING_URL}/health`);
+        logEvent('INFO', `Render Keep-Alive: Pinged ML at ${process.env.ML_PING_URL}/health`);
+      }
+    } catch (e) {
+      logEvent('WARNING', `Render Keep-Alive self-ping failed: ${e.message}`);
+    }
+  }, pingInterval);
+}
 
 app.listen(port, () => {
   console.log(`StayShield API listening on port ${port}`);
