@@ -35,8 +35,61 @@ function logEvent(type, message, details = null) {
 // Dynamic migration check on startup
 async function runMigrations() {
   try {
-    await pool.query("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS confidence_score INT;");
-    logEvent('INFO', 'Database migrations successfully applied (confidence_score added if missing).');
+    // 1. Create hotels table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS hotels (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        location VARCHAR(255) NOT NULL,
+        latitude DECIMAL(10, 8),
+        longitude DECIMAL(11, 8),
+        risk_level VARCHAR(20) DEFAULT 'Low',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // 2. Create users table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        password VARCHAR(255) NOT NULL,
+        role VARCHAR(50) NOT NULL,
+        name VARCHAR(255),
+        hotel_id INT REFERENCES hotels(id) ON DELETE SET NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // 3. Alter bookings table
+    await pool.query("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS confidence_score INT DEFAULT 100;");
+    await pool.query("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS hotel_id INT REFERENCES hotels(id) ON DELETE SET NULL;");
+
+    // 4. Seed Bihar hotels
+    const hotelsCount = await pool.query("SELECT COUNT(*) FROM hotels");
+    if (parseInt(hotelsCount.rows[0].count) === 0) {
+      await pool.query(`
+        INSERT INTO hotels (id, name, location, latitude, longitude, risk_level) VALUES
+        (1, 'Patna Royal Palace', 'Patna, Bihar', 25.5941, 85.1376, 'Low'),
+        (2, 'Gaya Heritage Inn', 'Gaya, Bihar', 24.7914, 85.0002, 'Medium'),
+        (3, 'Rajgir Wellness Resort', 'Rajgir, Bihar', 25.0300, 85.4170, 'High')
+      `);
+      logEvent('INFO', 'Bihar Hotels seeded successfully.');
+    }
+
+    // 5. Seed Users
+    const usersCount = await pool.query("SELECT COUNT(*) FROM users");
+    if (parseInt(usersCount.rows[0].count) === 0) {
+      await pool.query(`
+        INSERT INTO users (email, password, role, name, hotel_id) VALUES
+        ('owner@stayshield.com', 'password123', 'Owner', 'Hotel Owner Admin', NULL),
+        ('admin@stayshield.com', 'password123', 'Admin', 'Patna Hotel Manager', 1),
+        ('receptionist@stayshield.com', 'password123', 'Receptionist', 'Patna Front Desk', 1)
+      `);
+      logEvent('INFO', 'Default user roles seeded successfully.');
+    }
+
+    logEvent('INFO', 'Database migrations successfully applied (multi-tenant tables initialized).');
   } catch (err) {
     logEvent('ERROR', 'Failed to run database migrations', { error: err.message });
   }
@@ -175,21 +228,82 @@ function checkOverlap(b1, b2) {
   return start1 < end2 && start2 < end1;
 }
 
-// 1. Auth Endpoint
-app.post('/api/auth/login', (req, res) => {
-  const { email, password } = req.body;
-  if (email === 'user@stayshield.com' && password === 'password123') {
-    return res.json({
-      success: true,
-      user: {
-        email: 'user@stayshield.com',
-        role: 'Hotel Staff',
-        name: 'Front Desk Staff'
-      },
-      token: 'mock-jwt-token'
-    });
+// Helper to validate date string bounds (e.g. preventing invalid calendar dates like 2026-09-31)
+function isValidDate(dateStr) {
+  if (!dateStr) return false;
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return false;
+  const parts = dateStr.split('-');
+  if (parts.length === 3) {
+    const y = parseInt(parts[0]);
+    const m = parseInt(parts[1]) - 1;
+    const day = parseInt(parts[2]);
+    return d.getFullYear() === y && d.getMonth() === m && d.getDate() === day;
   }
-  return res.status(401).json({ success: false, message: 'Invalid credentials. Use user@stayshield.com / password123' });
+  return true;
+}
+
+// 1. Auth & Hotel Endpoints
+app.post('/api/auth/login', async (req, res) => {
+  const { email, password } = req.body;
+  try {
+    const dbRes = await pool.query(
+      'SELECT u.*, h.name as hotel_name FROM users u LEFT JOIN hotels h ON u.hotel_id = h.id WHERE u.email = $1 AND u.password = $2',
+      [email, password]
+    );
+    if (dbRes.rowCount > 0) {
+      const user = dbRes.rows[0];
+      return res.json({
+        success: true,
+        user: {
+          id: user.id,
+          email: user.email,
+          role: user.role,
+          name: user.name,
+          hotel_id: user.hotel_id,
+          hotel_name: user.hotel_name
+        },
+        token: 'mock-jwt-token'
+      });
+    }
+    return res.status(401).json({ success: false, message: 'Invalid credentials. Preconfigured: owner@stayshield.com / password123' });
+  } catch (err) {
+    console.error('Login error:', err);
+    return res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+
+app.post('/api/auth/register', async (req, res) => {
+  const { email, password, role, name, hotel_id } = req.body;
+  if (!email || !password || !role || !name) {
+    return res.status(400).json({ error: 'Missing required signup fields' });
+  }
+  try {
+    const userCheck = await pool.query('SELECT 1 FROM users WHERE email = $1', [email]);
+    if (userCheck.rowCount > 0) {
+      return res.status(409).json({ error: 'User with this email already exists' });
+    }
+    
+    await pool.query(
+      'INSERT INTO users (email, password, role, name, hotel_id) VALUES ($1, $2, $3, $4, $5)',
+      [email, password, role, name, hotel_id ? parseInt(hotel_id) : null]
+    );
+    logEvent('INFO', `User registered successfully: ${email} (${role})`);
+    res.json({ success: true, message: 'Registration successful!' });
+  } catch (err) {
+    console.error('Registration error:', err);
+    res.status(500).json({ error: 'Failed to register user' });
+  }
+});
+
+app.get('/api/hotels', async (req, res) => {
+  try {
+    const dbRes = await pool.query('SELECT * FROM hotels ORDER BY name ASC');
+    res.json(dbRes.rows);
+  } catch (err) {
+    console.error('Error fetching hotels:', err);
+    res.status(500).json({ error: 'Failed to fetch hotels' });
+  }
 });
 
 // 2. CSV Upload Endpoint
@@ -201,6 +315,8 @@ app.post('/api/bookings/upload', upload.single('file'), async (req, res) => {
   const csvData = req.file.buffer.toString('utf-8');
   logEvent('INFO', `CSV upload request received. Size: ${req.file.size} bytes`);
   
+  const userHotelId = req.headers['x-user-hotel-id'] ? parseInt(req.headers['x-user-hotel-id']) : null;
+
   parse(csvData, {
     columns: true,
     skip_empty_lines: true,
@@ -222,6 +338,14 @@ app.post('/api/bookings/upload', upload.single('file'), async (req, res) => {
       const insertedBookings = [];
 
       for (const row of records) {
+        const hotel_id = parseInt(row.hotel_id) || userHotelId || 1;
+
+        // Date validation check (skips rows with invalid dates instead of crashing the whole batch)
+        if (!isValidDate(row.check_in) || !isValidDate(row.check_out)) {
+          logEvent('WARNING', `Skipped booking with invalid date string for Guest: ${row.guest_name || 'Unknown'}. Check-in: ${row.check_in}, Check-out: ${row.check_out}`);
+          continue;
+        }
+
         // Deduplication Check
         const dupCheck = await pool.query(
           "SELECT 1 FROM bookings WHERE guest_name = $1 AND check_in = $2 AND check_out = $3 AND room_type = $4 LIMIT 1",
@@ -289,14 +413,15 @@ app.post('/api/bookings/upload', upload.single('file'), async (req, res) => {
         // Insert into Postgres
         const insertQuery = `
           INSERT INTO bookings (
-            guest_name, phone, email, room_type, check_in, check_out, amount, 
+            hotel_id, guest_name, phone, email, room_type, check_in, check_out, amount, 
             payment_status, source_channel, booking_date, risk_level, risk_score, 
             top_reason, recommended_action, deadline, confidence_score, status
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
           RETURNING *
         `;
 
         const values = [
+          hotel_id,
           row.guest_name,
           row.phone,
           row.email,
@@ -342,7 +467,14 @@ app.post('/api/bookings/manual', async (req, res) => {
     return res.status(400).json({ error: 'Missing required booking fields (guest_name, check_in, check_out, room_type, amount)' });
   }
 
-  logEvent('INFO', `Manual booking entry request received. Guest: ${row.guest_name}`);
+  if (!isValidDate(row.check_in) || !isValidDate(row.check_out)) {
+    return res.status(400).json({ error: 'Invalid check-in or check-out date. Please verify the calendar dates.' });
+  }
+
+  const userHotelId = req.headers['x-user-hotel-id'] ? parseInt(req.headers['x-user-hotel-id']) : null;
+  const hotel_id = parseInt(row.hotel_id) || userHotelId || 1;
+
+  logEvent('INFO', `Manual booking entry request received. Guest: ${row.guest_name}, Hotel ID: ${hotel_id}`);
 
   try {
     // 1. Deduplication Check
@@ -405,14 +537,15 @@ app.post('/api/bookings/manual', async (req, res) => {
     // 4. Insert into Postgres
     const insertQuery = `
       INSERT INTO bookings (
-        guest_name, phone, email, room_type, check_in, check_out, amount, 
+        hotel_id, guest_name, phone, email, room_type, check_in, check_out, amount, 
         payment_status, source_channel, booking_date, risk_level, risk_score, 
         top_reason, recommended_action, deadline, confidence_score, status
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
       RETURNING *
     `;
 
     const values = [
+      hotel_id,
       row.guest_name,
       row.phone || '',
       row.email || '',
@@ -445,6 +578,31 @@ app.post('/api/bookings/manual', async (req, res) => {
   }
 });
 
+// DELETE /api/bookings (Delete all bookings - scoped or global)
+app.delete('/api/bookings', async (req, res) => {
+  const userRole = req.headers['x-user-role'] || 'Owner';
+  const userHotelId = req.headers['x-user-hotel-id'] ? parseInt(req.headers['x-user-hotel-id']) : null;
+
+  if (userRole === 'Receptionist') {
+    return res.status(403).json({ error: 'Forbidden: Receptionists cannot delete data' });
+  }
+
+  try {
+    if (userRole === 'Admin' && userHotelId) {
+      await pool.query('DELETE FROM bookings WHERE hotel_id = $1', [userHotelId]);
+      logEvent('INFO', `All bookings deleted for Hotel ID: ${userHotelId} by Admin.`);
+    } else {
+      await pool.query('DELETE FROM bookings');
+      logEvent('INFO', 'All bookings cleared across all hotels by Owner.');
+    }
+    invalidateCache();
+    res.json({ success: true, message: 'All bookings cleared successfully' });
+  } catch (err) {
+    console.error('Error deleting bookings:', err);
+    res.status(500).json({ error: 'Failed to delete bookings' });
+  }
+});
+
 // 10. Health Check Endpoint (Render / Load Balancer)
 app.get('/health', async (req, res) => {
   try {
@@ -459,8 +617,10 @@ app.get('/health', async (req, res) => {
 // 3. GET /api/bookings
 app.get('/api/bookings', async (req, res) => {
   const { status, sort } = req.query;
+  const userRole = req.headers['x-user-role'] || 'Owner';
+  const userHotelId = req.headers['x-user-hotel-id'] ? parseInt(req.headers['x-user-hotel-id']) : null;
   
-  const cacheKey = `bookings_${status || 'All'}_${sort || 'default'}`;
+  const cacheKey = `bookings_${status || 'All'}_${sort || 'default'}_${userRole}_${userHotelId || 'none'}`;
   const cachedData = await getCache(cacheKey);
   if (cachedData) {
     return res.json(cachedData);
@@ -469,7 +629,14 @@ app.get('/api/bookings', async (req, res) => {
   let queryText = 'SELECT * FROM bookings';
   const queryParams = [];
 
-  if (status) {
+  if (userRole !== 'Owner' && userHotelId) {
+    queryText += ' WHERE hotel_id = $1';
+    queryParams.push(userHotelId);
+    if (status) {
+      queryText += ' AND status = $2';
+      queryParams.push(status);
+    }
+  } else if (status) {
     queryText += ' WHERE status = $1';
     queryParams.push(status);
   }
@@ -542,10 +709,18 @@ app.post('/api/bookings/bulk-resolve', async (req, res) => {
 // 6. GET /api/duplicates
 app.get('/api/duplicates', async (req, res) => {
   try {
-    // Only cluster bookings that are NOT Resolved (i.e. status is Open or Ignored)
-    const dbRes = await pool.query(
-      "SELECT * FROM bookings WHERE status != 'Resolved'"
-    );
+    const userRole = req.headers['x-user-role'] || 'Owner';
+    const userHotelId = req.headers['x-user-hotel-id'] ? parseInt(req.headers['x-user-hotel-id']) : null;
+
+    let queryText = "SELECT * FROM bookings WHERE status != 'Resolved'";
+    const queryParams = [];
+
+    if (userRole !== 'Owner' && userHotelId) {
+      queryText += " AND hotel_id = $1";
+      queryParams.push(userHotelId);
+    }
+
+    const dbRes = await pool.query(queryText, queryParams);
     const bookings = dbRes.rows;
 
     const n = bookings.length;
@@ -639,7 +814,10 @@ app.get('/api/duplicates', async (req, res) => {
 
 // 7. GET /api/recovery-summary
 app.get('/api/recovery-summary', async (req, res) => {
-  const cacheKey = 'recovery_summary';
+  const userRole = req.headers['x-user-role'] || 'Owner';
+  const userHotelId = req.headers['x-user-hotel-id'] ? parseInt(req.headers['x-user-hotel-id']) : null;
+
+  const cacheKey = `recovery_summary_${userRole}_${userHotelId || 'none'}`;
   const cachedData = await getCache(cacheKey);
   if (cachedData) {
     return res.json(cachedData);
@@ -652,25 +830,26 @@ app.get('/api/recovery-summary', async (req, res) => {
     const currentMonth = now.getMonth() + 1; // 1-based
 
     // Get bookings resolved that were Medium or High risk
-    const dbRes = await pool.query(
-      `SELECT * FROM bookings 
-       WHERE status = 'Resolved' 
-         AND risk_level IN ('Medium', 'High')
-       ORDER BY check_in DESC`
-    );
+    let queryText = `
+      SELECT * FROM bookings 
+      WHERE status = 'Resolved' 
+        AND risk_level IN ('Medium', 'High')
+    `;
+    const queryParams = [];
+
+    if (userRole !== 'Owner' && userHotelId) {
+      queryText += " AND hotel_id = $1";
+      queryParams.push(userHotelId);
+    }
+
+    queryText += " ORDER BY check_in DESC";
+    const dbRes = await pool.query(queryText, queryParams);
     const allResolved = dbRes.rows;
 
-    // Filter by check_in date within the current calendar month
-    // Note: We use check_in date as the event month.
-    const currentMonthResolved = allResolved.filter(b => {
-      const checkInDate = new Date(b.check_in);
-      return checkInDate.getFullYear() === currentYear && (checkInDate.getMonth() + 1) === currentMonth;
-    });
-
-    const totalRecovered = currentMonthResolved.reduce((sum, b) => sum + parseFloat(b.amount || 0), 0);
+    const totalRecovered = allResolved.reduce((sum, b) => sum + parseFloat(b.amount || 0), 0);
 
     // Format for recovery table: date (check_in), guest, action taken (recommended_action), amount
-    const recoveryList = currentMonthResolved.map(b => ({
+    const recoveryList = allResolved.map(b => ({
       id: b.id,
       date: b.check_in,
       guest: b.guest_name,
@@ -688,6 +867,80 @@ app.get('/api/recovery-summary', async (req, res) => {
   } catch (err) {
     console.error('Error fetching recovery summary:', err);
     res.status(500).json({ error: 'Failed to retrieve recovery data' });
+  }
+});
+
+// 11. GET /api/analytics/demand-cancellation (Analytics tab predictions)
+app.get('/api/analytics/demand-cancellation', async (req, res) => {
+  const userRole = req.headers['x-user-role'] || 'Owner';
+  const userHotelId = req.headers['x-user-hotel-id'] ? parseInt(req.headers['x-user-hotel-id']) : null;
+
+  try {
+    // Count active (unresolved) bookings per hotel to dynamically adjust destination demand and cancellation forecasts
+    const patnaCountRes = await pool.query("SELECT COUNT(*) FROM bookings WHERE hotel_id = 1");
+    const gayaCountRes = await pool.query("SELECT COUNT(*) FROM bookings WHERE hotel_id = 2");
+    const rajgirCountRes = await pool.query("SELECT COUNT(*) FROM bookings WHERE hotel_id = 3");
+
+    const patnaCount = parseInt(patnaCountRes.rows[0].count) || 0;
+    const gayaCount = parseInt(gayaCountRes.rows[0].count) || 0;
+    const rajgirCount = parseInt(rajgirCountRes.rows[0].count) || 0;
+
+    // High risk count (High or Medium risk bookings that are STILL Open)
+    const patnaRiskRes = await pool.query("SELECT COUNT(*) FROM bookings WHERE hotel_id = 1 AND status = 'Open' AND risk_level IN ('Medium', 'High')");
+    const gayaRiskRes = await pool.query("SELECT COUNT(*) FROM bookings WHERE hotel_id = 2 AND status = 'Open' AND risk_level IN ('Medium', 'High')");
+    const rajgirRiskRes = await pool.query("SELECT COUNT(*) FROM bookings WHERE hotel_id = 3 AND status = 'Open' AND risk_level IN ('Medium', 'High')");
+
+    const patnaRisk = parseInt(patnaRiskRes.rows[0].count) || 0;
+    const gayaRisk = parseInt(gayaRiskRes.rows[0].count) || 0;
+    const rajgirRisk = parseInt(rajgirRiskRes.rows[0].count) || 0;
+
+    // Calculate dynamic cancellation probability rate (risk count / total count * 100, plus a baseline)
+    const patnaRate = patnaCount > 0 ? Math.round((patnaRisk / patnaCount) * 100) : 0;
+    const gayaRate = gayaCount > 0 ? Math.round((gayaRisk / gayaCount) * 100) : 0;
+    const rajgirRate = rajgirCount > 0 ? Math.round((rajgirRisk / rajgirCount) * 100) : 0;
+
+    const getAlert = (rate) => {
+      if (rate >= 30) return 'High';
+      if (rate >= 15) return 'Medium';
+      return 'Low';
+    };
+
+    // Calculate dynamic destination demand forecast (seasonal baseline + active bookings count scaled)
+    const demandForecast = [
+      { day: 'Day 1', Patna: 30 + patnaCount, Gaya: 15 + gayaCount, Rajgir: 10 + rajgirCount },
+      { day: 'Day 2', Patna: 35 + patnaCount, Gaya: 18 + gayaCount, Rajgir: 12 + rajgirCount },
+      { day: 'Day 3', Patna: 40 + patnaCount, Gaya: 22 + gayaCount, Rajgir: 15 + rajgirCount },
+      { day: 'Day 4', Patna: 45 + patnaCount, Gaya: 25 + gayaCount, Rajgir: 18 + rajgirCount },
+      { day: 'Day 5', Patna: 42 + patnaCount, Gaya: 21 + gayaCount, Rajgir: 16 + rajgirCount },
+      { day: 'Day 6', Patna: 38 + patnaCount, Gaya: 17 + gayaCount, Rajgir: 13 + rajgirCount },
+      { day: 'Day 7', Patna: 41 + patnaCount, Gaya: 19 + gayaCount, Rajgir: 14 + rajgirCount }
+    ];
+
+    const cancellationProbabilities = [
+      { hotelId: 1, hotelName: 'Patna Royal Palace', rate: patnaRate, riskCount: patnaRisk, alert: getAlert(patnaRate) },
+      { hotelId: 2, hotelName: 'Gaya Heritage Inn', rate: gayaRate, riskCount: gayaRisk, alert: getAlert(gayaRate) },
+      { hotelId: 3, hotelName: 'Rajgir Wellness Resort', rate: rajgirRate, riskCount: rajgirRisk, alert: getAlert(rajgirRate) }
+    ];
+
+    if (userRole !== 'Owner' && userHotelId) {
+      const scopedCancellation = cancellationProbabilities.filter(c => c.hotelId === userHotelId);
+      const scopedForecast = demandForecast.map(d => {
+        const forecastItem = { day: d.day };
+        if (userHotelId === 1) forecastItem['Patna'] = d.Patna;
+        if (userHotelId === 2) forecastItem['Gaya'] = d.Gaya;
+        if (userHotelId === 3) forecastItem['Rajgir'] = d.Rajgir;
+        return forecastItem;
+      });
+      return res.json({ demandForecast: scopedForecast, cancellationProbabilities: scopedCancellation });
+    }
+
+    res.json({
+      demandForecast,
+      cancellationProbabilities
+    });
+  } catch (err) {
+    console.error('Error fetching analytics:', err);
+    res.status(500).json({ error: 'Failed to retrieve analytics forecasting' });
   }
 });
 

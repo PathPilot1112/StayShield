@@ -15,10 +15,10 @@ import {
   Check,
   TrendingUp,
   MapPin,
-  Activity
+  Activity,
+  BarChart3
 } from 'lucide-react';
 
-// Format short date e.g., "Oct 12 - Oct 15" or "Oct 12, 2026"
 function formatDateRange(checkIn, checkOut) {
   if (!checkIn || !checkOut) return '';
   const d1 = new Date(checkIn);
@@ -43,8 +43,8 @@ function formatSingleDate(dateStr) {
 
 function formatCurrency(amount) {
   const parsed = parseFloat(amount);
-  if (isNaN(parsed)) return '$0.00';
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(parsed);
+  if (isNaN(parsed)) return '₹0.00';
+  return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(parsed);
 }
 
 // Leaflet custom SVG marker creation helper (Offline-compliant)
@@ -64,21 +64,21 @@ const createCustomIcon = (color) => {
   });
 };
 
-// Map Component
+// Map Component centered in Bihar, India
 function NetworkMap({ navigate }) {
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
 
   const hotels = [
-    { name: "THE GRAND LUX", id: "SS-1042", coords: [41.8818, -87.6232], risk: "Low", color: "#6B7280" },
-    { name: "STAYSHIELD DOWNTOWN", id: "SS-1043", coords: [41.8781, -87.6298], risk: "Medium", color: "#F59E0B" },
-    { name: "RIVERSIDE SUITES", id: "SS-1088", coords: [41.8885, -87.6200], risk: "High", color: "#EF4444" }
+    { name: "Patna Royal Palace", id: "SS-1042", coords: [25.5941, 85.1376], risk: "Low", color: "#6B7280" },
+    { name: "Gaya Heritage Inn", id: "SS-1043", coords: [24.7914, 85.0002], risk: "Medium", color: "#F59E0B" },
+    { name: "Rajgir Wellness Resort", id: "SS-1088", coords: [25.0300, 85.4170], risk: "High", color: "#EF4444" }
   ];
 
   useEffect(() => {
     if (mapRef.current && !mapInstance.current) {
-      // Initialize map centered on Chicago coordinates
-      mapInstance.current = L.map(mapRef.current).setView([41.8820, -87.6240], 14);
+      // Center map on BiharCoordinates
+      mapInstance.current = L.map(mapRef.current).setView([25.0961, 85.3131], 8);
 
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '&copy; OpenStreetMap contributors'
@@ -152,7 +152,7 @@ function NetworkMap({ navigate }) {
                 <div>
                   <span className="text-[9px] font-bold text-slate-400 block uppercase">ID: {h.id}</span>
                   <strong className="text-xs font-bold text-slate-900 block mt-0.5">{h.name}</strong>
-                  <span className="text-[10px] text-slate-500 mt-1 block">Chicago Downtown</span>
+                  <span className="text-[10px] text-slate-500 mt-1 block">Bihar, India</span>
                 </div>
                 <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: h.color }} title={`${h.risk} Risk`} />
               </div>
@@ -173,21 +173,34 @@ export default function App() {
   });
 
   // Login form state
-  const [loginEmail, setLoginEmail] = useState('user@stayshield.com');
+  const [loginEmail, setLoginEmail] = useState('owner@stayshield.com');
   const [loginPassword, setLoginPassword] = useState('password123');
-  const [loginRole, setLoginRole] = useState('Hotel Staff');
   const [loginError, setLoginError] = useState('');
 
+  // Register form state
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [regName, setRegName] = useState('');
+  const [regEmail, setRegEmail] = useState('');
+  const [regPassword, setRegPassword] = useState('');
+  const [regRole, setRegRole] = useState('Receptionist');
+  const [regHotelId, setRegHotelId] = useState('');
+  const [regError, setRegError] = useState('');
+  const [regSuccess, setRegSuccess] = useState('');
+
   // Data states
+  const [hotels, setHotels] = useState([]);
   const [bookings, setBookings] = useState([]);
   const [duplicates, setDuplicates] = useState([]);
   const [recoverySummary, setRecoverySummary] = useState({ totalRecovered: 0, bookings: [] });
   const [diagnostics, setDiagnostics] = useState({ ml_status: 'Offline', db_status: 'Unhealthy', logs: [] });
+  const [analytics, setAnalytics] = useState({ demandForecast: [], cancellationProbabilities: [] });
   
   // UI states
   const [inboxFilter, setInboxFilter] = useState('All'); // 'All' | 'Open' | 'Resolved'
   const [inboxSort, setInboxSort] = useState('risk_score_desc'); // 'risk_score_desc' | 'id_desc'
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+  const [uploadHotelId, setUploadHotelId] = useState('');
+  const [selectedHotelFilter, setSelectedHotelFilter] = useState('All');
   const [uploadFile, setUploadFile] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [uploadSuccess, setUploadSuccess] = useState(null);
@@ -204,6 +217,7 @@ export default function App() {
   const [manualAmount, setManualAmount] = useState('');
   const [manualPaymentStatus, setManualPaymentStatus] = useState('Unpaid');
   const [manualSourceChannel, setManualSourceChannel] = useState('Phone Call');
+  const [manualHotelId, setManualHotelId] = useState('');
   const [manualError, setManualError] = useState('');
   const [manualSuccess, setManualSuccess] = useState('');
 
@@ -221,6 +235,48 @@ export default function App() {
     setRoute(path);
   };
 
+  // RBAC route guard
+  useEffect(() => {
+    if (user) {
+      if (user.role === 'Receptionist' && !['/inbox', '/recovered'].includes(route)) {
+        navigate('/inbox');
+      } else if (user.role === 'Admin' && ['/map', '/analytics'].includes(route)) {
+        navigate('/inbox');
+      }
+    }
+  }, [route, user]);
+
+  // Load hotels list for signup dropdown
+  useEffect(() => {
+    const fetchHotels = async () => {
+      try {
+        const res = await fetch('/api/hotels');
+        if (res.ok) {
+          const data = await res.json();
+          setHotels(data);
+          if (data.length > 0) setRegHotelId(data[0].id.toString());
+        }
+      } catch (err) {
+        console.error('Error fetching hotels:', err);
+      }
+    };
+    fetchHotels();
+  }, []);
+
+  // Request headers helper containing RBAC context
+  const getAuthHeaders = () => {
+    if (!user) return {};
+    const headers = {
+      'x-user-role': user.role,
+      'x-user-hotel-id': user.hotel_id ? user.hotel_id.toString() : ''
+    };
+    if (user.role === 'Owner' && selectedHotelFilter !== 'All') {
+      headers['x-user-hotel-id'] = selectedHotelFilter;
+      headers['x-user-role'] = 'Admin';
+    }
+    return headers;
+  };
+
   // Fetch functions
   const fetchBookings = async () => {
     try {
@@ -228,7 +284,9 @@ export default function App() {
       const sortParam = `sort=${inboxSort}`;
       const query = [statusParam, sortParam].filter(Boolean).join('&');
       
-      const res = await fetch(`/api/bookings?${query}`);
+      const res = await fetch(`/api/bookings?${query}`, {
+        headers: getAuthHeaders()
+      });
       if (res.ok) {
         const data = await res.json();
         setBookings(data);
@@ -240,7 +298,9 @@ export default function App() {
 
   const fetchDuplicates = async () => {
     try {
-      const res = await fetch('/api/duplicates');
+      const res = await fetch('/api/duplicates', {
+        headers: getAuthHeaders()
+      });
       if (res.ok) {
         const data = await res.json();
         setDuplicates(data);
@@ -252,7 +312,9 @@ export default function App() {
 
   const fetchRecoverySummary = async () => {
     try {
-      const res = await fetch('/api/recovery-summary');
+      const res = await fetch('/api/recovery-summary', {
+        headers: getAuthHeaders()
+      });
       if (res.ok) {
         const data = await res.json();
         setRecoverySummary(data);
@@ -264,13 +326,29 @@ export default function App() {
 
   const fetchDiagnostics = async () => {
     try {
-      const res = await fetch('/api/diagnostics/logs');
+      const res = await fetch('/api/diagnostics/logs', {
+        headers: getAuthHeaders()
+      });
       if (res.ok) {
         const data = await res.json();
         setDiagnostics(data);
       }
     } catch (err) {
       console.error('Error fetching diagnostics:', err);
+    }
+  };
+
+  const fetchAnalytics = async () => {
+    try {
+      const res = await fetch('/api/analytics/demand-cancellation', {
+        headers: getAuthHeaders()
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAnalytics(data);
+      }
+    } catch (err) {
+      console.error('Error fetching analytics:', err);
     }
   };
 
@@ -285,8 +363,10 @@ export default function App() {
       fetchRecoverySummary();
     } else if (route === '/diagnostics') {
       fetchDiagnostics();
+    } else if (route === '/analytics') {
+      fetchAnalytics();
     }
-  }, [route, user, inboxFilter, inboxSort]);
+  }, [route, user, inboxFilter, inboxSort, selectedHotelFilter]);
 
   // Diagnostics polling
   useEffect(() => {
@@ -318,6 +398,40 @@ export default function App() {
     }
   };
 
+  // Registration Submit
+  const handleRegisterSubmit = async (e) => {
+    e.preventDefault();
+    setRegError('');
+    setRegSuccess('');
+
+    const payload = {
+      name: regName,
+      email: regEmail,
+      password: regPassword,
+      role: regRole,
+      hotel_id: regRole === 'Owner' ? null : parseInt(regHotelId)
+    };
+
+    try {
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setRegSuccess('Registration successful! Switch to Sign In to log in.');
+        setRegName('');
+        setRegEmail('');
+        setRegPassword('');
+      } else {
+        setRegError(data.error || 'Registration failed.');
+      }
+    } catch (err) {
+      setRegError('Server connection error. Please try again.');
+    }
+  };
+
   const handleLogout = () => {
     localStorage.removeItem('stayshield_user');
     setUser(null);
@@ -328,7 +442,7 @@ export default function App() {
     try {
       const res = await fetch(`/api/bookings/${bookingId}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus })
       });
       if (res.ok) {
@@ -348,7 +462,7 @@ export default function App() {
     try {
       const res = await fetch('/api/bookings/bulk-resolve', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ bookingIds })
       });
       if (res.ok) {
@@ -373,9 +487,16 @@ export default function App() {
     const formData = new FormData();
     formData.append('file', uploadFile);
 
+    const headers = {};
+    if (user) {
+      headers['x-user-role'] = user.role;
+      headers['x-user-hotel-id'] = (user.role === 'Owner' && uploadHotelId) ? uploadHotelId : (user.hotel_id ? user.hotel_id.toString() : '');
+    }
+
     try {
       const res = await fetch('/api/bookings/upload', {
         method: 'POST',
+        headers: headers,
         body: formData
       });
       const data = await res.json();
@@ -399,6 +520,7 @@ export default function App() {
     }
   };
 
+  // Manual booking submit
   const handleManualBookingSubmit = async (e) => {
     e.preventDefault();
     setManualError('');
@@ -413,13 +535,14 @@ export default function App() {
       check_out: manualCheckOut,
       amount: parseFloat(manualAmount),
       payment_status: manualPaymentStatus,
-      source_channel: manualSourceChannel
+      source_channel: manualSourceChannel,
+      hotel_id: user.role === 'Owner' ? (manualHotelId ? parseInt(manualHotelId) : null) : user.hotel_id
     };
 
     try {
       const res = await fetch('/api/bookings/manual', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
       const data = await res.json();
@@ -451,7 +574,31 @@ export default function App() {
     }
   };
 
-  // Auth gate
+  const handleDeleteAllBookings = async () => {
+    if (!window.confirm("WARNING: Are you sure you want to delete all bookings? This action cannot be undone.")) {
+      return;
+    }
+    try {
+      const res = await fetch('/api/bookings', {
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      });
+      if (res.ok) {
+        alert("All bookings cleared successfully.");
+        fetchBookings();
+        fetchDuplicates();
+        fetchRecoverySummary();
+        fetchAnalytics();
+      } else {
+        const data = await res.json();
+        alert(data.error || "Failed to delete bookings");
+      }
+    } catch (err) {
+      alert("Network error trying to clear bookings.");
+    }
+  };
+
+  // Auth gate (Login or Register pages)
   if (!user) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
@@ -462,66 +609,166 @@ export default function App() {
                 <Shield className="h-6 w-6" />
               </div>
               <h1 className="text-2xl font-bold tracking-tight text-slate-900 font-sans uppercase">STAYSHIELD</h1>
-              <p className="text-sm text-slate-500 mt-1">Secure Front-Desk Operations</p>
+              <p className="text-sm text-slate-500 mt-1">Multi-Tenant Hotel Risk Suite</p>
             </div>
 
-            <form onSubmit={handleLoginSubmit} className="space-y-4">
-              {loginError && (
-                <div className="p-3 bg-red-50 border border-red-200 text-red-600 rounded-lg text-sm flex items-center gap-2">
-                  <AlertCircle className="h-4 w-4 shrink-0" />
-                  <span>{loginError}</span>
+            {/* Preseeded Logins Helper Card */}
+            {!isRegistering && (
+              <div className="bg-slate-50 border border-slate-200 p-3.5 rounded-lg text-[10px] text-slate-600 mb-5 leading-normal space-y-1">
+                <strong className="text-slate-950 font-bold block uppercase tracking-wider mb-1">Preseeded Test Accounts:</strong>
+                <div>🏢 <strong>Owner:</strong> <code className="bg-slate-200/60 px-1 rounded text-black">owner@stayshield.com</code> / password123 (full views)</div>
+                <div>💼 <strong>Admin:</strong> <code className="bg-slate-200/60 px-1 rounded text-black">admin@stayshield.com</code> / password123 (Patna hotel manager)</div>
+                <div>🛎️ <strong>Receptionist:</strong> <code className="bg-slate-200/60 px-1 rounded text-black">receptionist@stayshield.com</code> / password123 (Patna front-desk)</div>
+              </div>
+            )}
+
+            {isRegistering ? (
+              // Signup screen
+              <form onSubmit={handleRegisterSubmit} className="space-y-4">
+                <h3 className="text-sm font-extrabold text-slate-900 uppercase tracking-widest border-b pb-2">Create Account</h3>
+                
+                {regError && (
+                  <div className="p-3 bg-red-50 border border-red-200 text-red-600 rounded-lg text-xs flex items-center gap-2">
+                    <AlertCircle className="h-4 w-4 shrink-0" />
+                    <span>{regError}</span>
+                  </div>
+                )}
+
+                {regSuccess && (
+                  <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-lg text-xs flex items-center gap-2">
+                    <Check className="h-4 w-4 shrink-0" />
+                    <span>{regSuccess}</span>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Full Name</label>
+                  <input 
+                    type="text" 
+                    value={regName}
+                    onChange={(e) => setRegName(e.target.value)}
+                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-black text-xs"
+                    placeholder="Enter full name"
+                    required
+                  />
                 </div>
-              )}
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Email</label>
-                <input 
-                  type="email" 
-                  value={loginEmail}
-                  onChange={(e) => setLoginEmail(e.target.value)}
-                  className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-black focus:border-transparent text-sm"
-                  placeholder="user@stayshield.com"
-                  required
-                />
-              </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Email Address</label>
+                  <input 
+                    type="email" 
+                    value={regEmail}
+                    onChange={(e) => setRegEmail(e.target.value)}
+                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-black text-xs"
+                    placeholder="name@hotel.com"
+                    required
+                  />
+                </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Password</label>
-                <input 
-                  type="password" 
-                  value={loginPassword}
-                  onChange={(e) => setLoginPassword(e.target.value)}
-                  className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-black focus:border-transparent text-sm"
-                  placeholder="••••••••"
-                  required
-                />
-              </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Password</label>
+                  <input 
+                    type="password" 
+                    value={regPassword}
+                    onChange={(e) => setRegPassword(e.target.value)}
+                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-black text-xs"
+                    placeholder="••••••••"
+                    required
+                  />
+                </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Role</label>
-                <div className="relative">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Privilege Role</label>
                   <select 
-                    value={loginRole}
-                    onChange={(e) => setLoginRole(e.target.value)}
-                    className="w-full appearance-none px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-black focus:border-transparent text-sm bg-white"
+                    value={regRole}
+                    onChange={(e) => setRegRole(e.target.value)}
+                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-black text-xs bg-white"
                   >
-                    <option value="Hotel Staff">Hotel Staff</option>
+                    <option value="Receptionist">Receptionist (Limit: Upload/Resolved only)</option>
+                    <option value="Admin">Admin (Access duplicates/diagnostics)</option>
+                    <option value="Owner">Group Owner (See map, metrics, all hotels)</option>
                   </select>
-                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500 pointer-events-none" />
                 </div>
-              </div>
 
-              <button 
-                type="submit" 
-                className="w-full py-2.5 px-4 bg-black text-white hover:bg-slate-800 font-medium rounded-lg text-sm transition-colors mt-2"
-              >
-                Sign In
-              </button>
-            </form>
+                {regRole !== 'Owner' && (
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Assign to Hotel</label>
+                    <select 
+                      value={regHotelId}
+                      onChange={(e) => setRegHotelId(e.target.value)}
+                      className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-black text-xs bg-white"
+                    >
+                      {hotels.map(h => (
+                        <option key={h.id} value={h.id}>{h.name} ({h.location})</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
 
+                <button 
+                  type="submit" 
+                  className="w-full py-2.5 px-4 bg-black text-white hover:bg-slate-800 font-medium rounded-lg text-sm transition-colors mt-2"
+                >
+                  Create Account
+                </button>
+              </form>
+            ) : (
+              // Login Screen
+              <form onSubmit={handleLoginSubmit} className="space-y-4">
+                {loginError && (
+                  <div className="p-3 bg-red-50 border border-red-200 text-red-600 rounded-lg text-sm flex items-center gap-2">
+                    <AlertCircle className="h-4 w-4 shrink-0" />
+                    <span>{loginError}</span>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Email</label>
+                  <input 
+                    type="email" 
+                    value={loginEmail}
+                    onChange={(e) => setLoginEmail(e.target.value)}
+                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-black focus:border-transparent text-sm"
+                    placeholder="user@stayshield.com"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Password</label>
+                  <input 
+                    type="password" 
+                    value={loginPassword}
+                    onChange={(e) => setLoginPassword(e.target.value)}
+                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-black focus:border-transparent text-sm"
+                    placeholder="••••••••"
+                    required
+                  />
+                </div>
+
+                <button 
+                  type="submit" 
+                  className="w-full py-2.5 px-4 bg-black text-white hover:bg-slate-800 font-medium rounded-lg text-sm transition-colors mt-2"
+                >
+                  Sign In
+                </button>
+              </form>
+            )}
+
+            {/* Auth toggle footer */}
             <div className="mt-6 pt-6 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+              <button 
+                onClick={() => {
+                  setIsRegistering(!isRegistering);
+                  setRegError('');
+                  setRegSuccess('');
+                  setLoginError('');
+                }} 
+                className="hover:text-black font-semibold uppercase tracking-wider"
+              >
+                {isRegistering ? 'Back to Sign In' : 'Register Account'}
+              </button>
               <a href="#" className="hover:text-black">Forgot Password?</a>
-              <a href="#" className="hover:text-black">Register Account</a>
             </div>
           </div>
         </div>
@@ -529,7 +776,7 @@ export default function App() {
     );
   }
 
-  // Dashboard layout
+  // Dashboard layouts
   return (
     <div className="min-h-screen flex bg-[#FAF9F9]">
       {/* Sidebar */}
@@ -546,7 +793,7 @@ export default function App() {
             </div>
           </div>
 
-          {/* Navigation Links */}
+          {/* Navigation Links (RBAC Filtered) */}
           <nav className="p-4 space-y-1">
             <button 
               onClick={() => navigate('/inbox')}
@@ -559,17 +806,21 @@ export default function App() {
               <Inbox className="h-4 w-4" />
               <span>Inbox</span>
             </button>
-            <button 
-              onClick={() => navigate('/duplicates')}
-              className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                route === '/duplicates' 
-                  ? 'bg-slate-100 text-black' 
-                  : 'text-slate-600 hover:bg-slate-50 hover:text-black'
-              }`}
-            >
-              <Copy className="h-4 w-4" />
-              <span>Duplicates</span>
-            </button>
+
+            {user.role !== 'Receptionist' && (
+              <button 
+                onClick={() => navigate('/duplicates')}
+                className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                  route === '/duplicates' 
+                    ? 'bg-slate-100 text-black' 
+                    : 'text-slate-600 hover:bg-slate-50 hover:text-black'
+                }`}
+              >
+                <Copy className="h-4 w-4" />
+                <span>Duplicates</span>
+              </button>
+            )}
+
             <button 
               onClick={() => navigate('/recovered')}
               className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${
@@ -581,47 +832,86 @@ export default function App() {
               <CheckCircle2 className="h-4 w-4" />
               <span>Recovered</span>
             </button>
-            <button 
-              onClick={() => navigate('/map')}
-              className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                route === '/map' 
-                  ? 'bg-slate-100 text-black' 
-                  : 'text-slate-600 hover:bg-slate-50 hover:text-black'
-              }`}
-            >
-              <MapPin className="h-4 w-4" />
-              <span>Network Map</span>
-            </button>
-            <button 
-              onClick={() => navigate('/diagnostics')}
-              className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                route === '/diagnostics' 
-                  ? 'bg-slate-100 text-black' 
-                  : 'text-slate-600 hover:bg-slate-50 hover:text-black'
-              }`}
-            >
-              <Activity className="h-4 w-4" />
-              <span>Diagnostics</span>
-            </button>
+
+            {user.role === 'Owner' && (
+              <>
+                <button 
+                  onClick={() => navigate('/map')}
+                  className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                    route === '/map' 
+                      ? 'bg-slate-100 text-black' 
+                      : 'text-slate-600 hover:bg-slate-50 hover:text-black'
+                  }`}
+                >
+                  <MapPin className="h-4 w-4" />
+                  <span>Network Map</span>
+                </button>
+                <button 
+                  onClick={() => navigate('/analytics')}
+                  className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                    route === '/analytics' 
+                      ? 'bg-slate-100 text-black' 
+                      : 'text-slate-600 hover:bg-slate-50 hover:text-black'
+                  }`}
+                >
+                  <BarChart3 className="h-4 w-4" />
+                  <span>Analytics</span>
+                </button>
+              </>
+            )}
+
+            {user.role !== 'Receptionist' && (
+              <button 
+                onClick={() => navigate('/diagnostics')}
+                className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                  route === '/diagnostics' 
+                    ? 'bg-slate-100 text-black' 
+                    : 'text-slate-600 hover:bg-slate-50 hover:text-black'
+                }`}
+              >
+                <Activity className="h-4 w-4" />
+                <span>Diagnostics</span>
+              </button>
+            )}
           </nav>
         </div>
 
         {/* Footer User Info */}
-        <div className="p-4 border-t border-slate-200">
-          <div className="flex items-center justify-between mb-3">
+        <div className="p-4 border-t border-slate-200 bg-slate-50/50">
+          <div className="mb-3">
+            <span className="text-[10px] font-extrabold text-slate-400 block uppercase tracking-wider text-left">Active Hotel Scope</span>
+            {user.role === 'Owner' ? (
+              <select
+                value={selectedHotelFilter}
+                onChange={(e) => setSelectedHotelFilter(e.target.value)}
+                className="w-full mt-1 px-2 py-1 bg-white border border-slate-200 rounded-lg text-[11px] font-semibold text-slate-800 focus:outline-none focus:ring-1 focus:ring-black cursor-pointer"
+              >
+                <option value="All">🏢 ALL BIHAR HOTELS</option>
+                {hotels.map(h => (
+                  <option key={h.id} value={h.id.toString()}>📍 {h.name}</option>
+                ))}
+              </select>
+            ) : (
+              <span className="text-xs font-semibold text-slate-900 block truncate mt-1 text-left">
+                📍 {user.hotel_name || 'My Hotel'}
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between mb-3 border-t border-slate-200/60 pt-3">
             <div className="flex items-center gap-2">
-              <div className="h-8 w-8 bg-slate-100 rounded-full flex items-center justify-center text-slate-600">
-                <User className="h-4 w-4" />
+              <div className="h-8 w-8 bg-slate-200 text-slate-700 rounded-full flex items-center justify-center font-bold text-xs uppercase">
+                {user.name.charAt(0)}
               </div>
-              <div>
-                <span className="text-xs font-semibold text-slate-900 block leading-tight">Admin User</span>
-                <span className="text-[10px] text-slate-500 block">Desk 4</span>
+              <div className="max-w-[120px]">
+                <span className="text-xs font-semibold text-slate-900 block truncate leading-tight">{user.name}</span>
+                <span className="text-[9px] text-slate-400 font-bold uppercase block tracking-wider mt-0.5">{user.role}</span>
               </div>
             </div>
           </div>
           <button 
             onClick={handleLogout}
-            className="w-full flex items-center justify-center gap-2 px-3 py-1.5 border border-slate-200 hover:border-slate-350 hover:bg-slate-50 text-xs font-medium rounded-lg text-slate-600 transition-colors"
+            className="w-full flex items-center justify-center gap-2 px-3 py-1.5 border border-slate-200 hover:border-slate-350 hover:bg-slate-100 text-xs font-medium rounded-lg text-slate-600 transition-colors"
           >
             <LogOut className="h-3 w-3" />
             <span>Sign Out</span>
@@ -640,9 +930,17 @@ export default function App() {
                 <p className="text-xs text-slate-500 mt-0.5">Booking Risk inbox</p>
               </div>
               <div className="flex items-center gap-3">
+                {user.role !== 'Receptionist' && (
+                  <button 
+                    onClick={handleDeleteAllBookings}
+                    className="flex items-center gap-2 px-4 py-2 border border-red-200 hover:border-red-300 bg-red-50 hover:bg-red-100 text-red-700 text-sm font-semibold rounded-lg transition-colors shadow-xs"
+                  >
+                    <span>Clear Data</span>
+                  </button>
+                )}
                 <button 
                   onClick={() => setIsManualModalOpen(true)}
-                  className="flex items-center gap-2 px-4 py-2 border border-slate-200 hover:border-slate-350 hover:bg-slate-50 text-slate-700 text-sm font-semibold rounded-lg transition-colors"
+                  className="flex items-center gap-2 px-4 py-2 border border-slate-200 hover:border-slate-350 hover:bg-slate-50 text-slate-750 text-sm font-semibold rounded-lg transition-colors"
                 >
                   <span>New Booking</span>
                 </button>
@@ -780,7 +1078,7 @@ export default function App() {
           </div>
         )}
 
-        {route === '/duplicates' && (
+        {route === '/duplicates' && user.role !== 'Receptionist' && (
           <div className="p-8 flex-1">
             {/* Header */}
             <div className="mb-6">
@@ -871,6 +1169,9 @@ export default function App() {
                 <h2 className="text-4xl font-extrabold text-slate-900 mt-2 font-sans tracking-tight">
                   {formatCurrency(recoverySummary.totalRecovered)}
                 </h2>
+                <span className="text-[10px] text-slate-400 block mt-2 font-medium">
+                  💡 *Calculation:* Sum of booking amount for resolved medium/high-risk conflicts checking in this month.
+                </span>
               </div>
               <div className="h-12 w-12 bg-emerald-50 text-emerald-600 rounded-xl flex items-center justify-center shrink-0 border border-emerald-100">
                 <TrendingUp className="h-6 w-6" />
@@ -922,12 +1223,12 @@ export default function App() {
           </div>
         )}
 
-        {route === '/map' && (
+        {route === '/map' && user.role === 'Owner' && (
           <div className="flex-1 flex flex-col min-h-0">
             {/* Header */}
             <div className="p-8 pb-4">
               <h2 className="text-2xl font-bold tracking-tight text-slate-900">Network Map</h2>
-              <p className="text-xs text-slate-500 mt-0.5">Visualize hotels and duplicate proximity check-ins.</p>
+              <p className="text-xs text-slate-500 mt-0.5">Bihar hotel group risk map view.</p>
             </div>
             {/* Map wrapper */}
             <div className="flex-1 min-h-[500px] p-8 pt-0">
@@ -936,7 +1237,105 @@ export default function App() {
           </div>
         )}
 
-        {route === '/diagnostics' && (
+        {route === '/analytics' && user.role === 'Owner' && (
+          <div className="p-8 flex-1">
+            {/* Header */}
+            <div className="mb-6 flex justify-between items-center">
+              <div>
+                <h2 className="text-2xl font-bold tracking-tight text-slate-900">Analytics Dashboard</h2>
+                <p className="text-xs text-slate-500 mt-0.5">Destination Demand Forecasting & Cancellation Risk Probability metrics.</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              {/* Destination Demand chart */}
+              <div className="lg:col-span-2 bg-white border border-slate-200 p-6 rounded-xl shadow-xs">
+                <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wider mb-6">Bihar Destination Demand Forecast (Next 7 Days)</h3>
+                
+                {/* Visual Chart with bars */}
+                <div className="space-y-6">
+                  {analytics.demandForecast.map((d, index) => {
+                    const maxCount = 60;
+                    const patnaPct = d.Patna !== undefined ? ((d.Patna || 0) / maxCount) * 100 : 0;
+                    const gayaPct = d.Gaya !== undefined ? ((d.Gaya || 0) / maxCount) * 100 : 0;
+                    const rajgirPct = d.Rajgir !== undefined ? ((d.Rajgir || 0) / maxCount) * 100 : 0;
+
+                    return (
+                      <div key={index} className="grid grid-cols-12 items-center gap-3">
+                        <div className="col-span-2 text-xs font-semibold text-slate-500">{d.day}</div>
+                        <div className="col-span-10 space-y-1.5">
+                          {/* Patna */}
+                          {d.Patna !== undefined && (
+                            <div className="flex items-center gap-2">
+                              <span className="text-[9px] w-12 font-bold text-slate-400">Patna:</span>
+                              <div className="flex-1 bg-slate-100 h-2.5 rounded-full overflow-hidden">
+                                <div className="bg-slate-700 h-full rounded-full" style={{ width: `${patnaPct}%` }} />
+                              </div>
+                              <span className="text-[10px] font-bold text-slate-700">{d.Patna}</span>
+                            </div>
+                          )}
+                          {/* Gaya */}
+                          {d.Gaya !== undefined && (
+                            <div className="flex items-center gap-2">
+                              <span className="text-[9px] w-12 font-bold text-slate-400">Gaya:</span>
+                              <div className="flex-1 bg-slate-100 h-2.5 rounded-full overflow-hidden">
+                                <div className="bg-amber-400 h-full rounded-full" style={{ width: `${gayaPct}%` }} />
+                              </div>
+                              <span className="text-[10px] font-bold text-slate-700">{d.Gaya}</span>
+                            </div>
+                          )}
+                          {/* Rajgir */}
+                          {d.Rajgir !== undefined && (
+                            <div className="flex items-center gap-2">
+                              <span className="text-[9px] w-12 font-bold text-slate-400">Rajgir:</span>
+                              <div className="flex-1 bg-slate-100 h-2.5 rounded-full overflow-hidden">
+                                <div className="bg-red-400 h-full rounded-full" style={{ width: `${rajgirPct}%` }} />
+                              </div>
+                              <span className="text-[10px] font-bold text-slate-700">{d.Rajgir}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Cancellation probability card deck */}
+              <div className="space-y-6">
+                <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wider">Cancellation Probability Indexes</h3>
+                {analytics.cancellationProbabilities.map((c, i) => (
+                  <div key={i} className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs">
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">Hotel ID: {c.hotelId === 1 ? 'SS-1042' : c.hotelId === 2 ? 'SS-1043' : 'SS-1088'}</span>
+                        <strong className="text-sm text-slate-900 block mt-0.5 leading-tight">{c.hotelName}</strong>
+                      </div>
+                      <span className={`inline-flex px-1.5 py-0.5 text-[9px] font-bold uppercase rounded border ${
+                        c.alert === 'High' ? 'bg-red-50 text-red-700 border-red-100' :
+                        c.alert === 'Medium' ? 'bg-amber-50 text-amber-700 border-amber-100' :
+                        'bg-slate-100 text-slate-700 border-slate-250'
+                      }`}>{c.alert} Risk</span>
+                    </div>
+
+                    <div className="mt-4 pt-4 border-t border-slate-100 flex items-center justify-between">
+                      <div>
+                        <span className="text-[10px] text-slate-500 block font-medium">Cancellation Rate</span>
+                        <span className="text-2xl font-extrabold text-slate-900 block mt-1">{c.rate}%</span>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-[10px] text-slate-500 block font-medium">High Risk Bookings</span>
+                        <span className="text-sm font-bold text-slate-850 block mt-1">{c.riskCount} active</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {route === '/diagnostics' && user.role !== 'Receptionist' && (
           <div className="p-8 flex-1">
             {/* Header */}
             <div className="flex items-center justify-between mb-6">
@@ -1096,6 +1495,23 @@ export default function App() {
                 </div>
               )}
 
+              {user.role === 'Owner' && (
+                <div className="mb-4">
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Select Destination Hotel *</label>
+                  <select 
+                    value={uploadHotelId}
+                    onChange={(e) => setUploadHotelId(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-black text-xs bg-white"
+                    required
+                  >
+                    <option value="">-- Choose Hotel --</option>
+                    {hotels.map(h => (
+                      <option key={h.id} value={h.id}>{h.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
               <div className="border-2 border-dashed border-slate-300 rounded-lg p-6 flex flex-col items-center justify-center text-center bg-slate-50 hover:bg-slate-100 transition-colors cursor-pointer relative">
                 <input 
                   type="file" 
@@ -1221,7 +1637,7 @@ export default function App() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Booking Amount ($) *</label>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Booking Amount (INR) *</label>
                   <input 
                     type="number" 
                     step="0.01"
@@ -1279,6 +1695,23 @@ export default function App() {
                     <option value="Walk-in">Walk-in</option>
                   </select>
                 </div>
+
+                {user.role === 'Owner' && (
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">Assign to Hotel *</label>
+                    <select 
+                      value={manualHotelId}
+                      onChange={(e) => setManualHotelId(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-black text-xs bg-white"
+                      required
+                    >
+                      <option value="">-- Choose Hotel --</option>
+                      {hotels.map(h => (
+                        <option key={h.id} value={h.id}>{h.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
               </div>
 
               <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100 mt-6">
