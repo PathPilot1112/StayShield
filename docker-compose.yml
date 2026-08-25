@@ -25,6 +25,13 @@ services:
       - "${ML_PORT}:${ML_PORT}"
     restart: always
 
+  redis:
+    image: docker.io/library/redis:7-alpine
+    container_name: stayshield-redis
+    ports:
+      - "6379:6379"
+    restart: always
+
   api:
     build: ./api
     container_name: stayshield-api
@@ -33,10 +40,13 @@ services:
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - PORT=${API_PORT}
+      - REDIS_URL=redis://redis:6379
     depends_on:
       postgres:
         condition: service_healthy
       ml:
+        condition: service_started
+      redis:
         condition: service_started
     restart: always
 

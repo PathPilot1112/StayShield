@@ -43,16 +43,66 @@ async function runMigrations() {
 }
 runMigrations();
 
-// In-Memory Active Cache Layer
+const { createClient } = require('redis');
+
+// Initialize Redis client if REDIS_URL is provided in env
+let redisClient = null;
+if (process.env.REDIS_URL) {
+  redisClient = createClient({ url: process.env.REDIS_URL });
+  redisClient.on('error', (err) => logEvent('ERROR', 'Redis Client Error', { error: err.message }));
+  redisClient.connect()
+    .then(() => logEvent('INFO', 'Connected to Redis Cache Server successfully.'))
+    .catch((err) => logEvent('ERROR', 'Failed to connect to Redis', { error: err.message }));
+}
+
+// In-Memory Active Cache Layer Fallback
 const activeCache = {
-  bookings: {}, // will store keys like `All`, `Open`, `Resolved`
+  bookings: {},
   recovery: null
 };
 
-function invalidateCache() {
+// Active Cache Helper Wrapper (supports Redis & in-memory fallback)
+async function getCache(key) {
+  if (redisClient && redisClient.isOpen) {
+    try {
+      const val = await redisClient.get(key);
+      return val ? JSON.parse(val) : null;
+    } catch (e) {
+      logEvent('ERROR', 'Failed to read from Redis cache', { error: e.message });
+    }
+  }
+  return activeCache[key] || null;
+}
+
+async function setCache(key, val) {
+  if (redisClient && redisClient.isOpen) {
+    try {
+      await redisClient.set(key, JSON.stringify(val), {
+        EX: 3600 // Expire in 1 hour
+      });
+      return;
+    } catch (e) {
+      logEvent('ERROR', 'Failed to write to Redis cache', { error: e.message });
+    }
+  }
+  activeCache[key] = val;
+}
+
+async function invalidateCache() {
+  if (redisClient && redisClient.isOpen) {
+    try {
+      const keys = await redisClient.keys('*');
+      if (keys.length > 0) {
+        await redisClient.del(keys);
+      }
+      logEvent('INFO', 'Redis Cache invalidated.');
+    } catch (e) {
+      logEvent('ERROR', 'Failed to invalidate Redis cache', { error: e.message });
+    }
+  }
   activeCache.bookings = {};
   activeCache.recovery = null;
-  logEvent('INFO', 'Active cache invalidated due to data modification.');
+  logEvent('INFO', 'Active local cache invalidated.');
 }
 
 // Background Connection Monitor
@@ -410,9 +460,10 @@ app.get('/health', async (req, res) => {
 app.get('/api/bookings', async (req, res) => {
   const { status, sort } = req.query;
   
-  const cacheKey = `${status || 'All'}_${sort || 'default'}`;
-  if (activeCache.bookings[cacheKey]) {
-    return res.json(activeCache.bookings[cacheKey]);
+  const cacheKey = `bookings_${status || 'All'}_${sort || 'default'}`;
+  const cachedData = await getCache(cacheKey);
+  if (cachedData) {
+    return res.json(cachedData);
   }
 
   let queryText = 'SELECT * FROM bookings';
@@ -431,7 +482,7 @@ app.get('/api/bookings', async (req, res) => {
 
   try {
     const dbRes = await pool.query(queryText, queryParams);
-    activeCache.bookings[cacheKey] = dbRes.rows;
+    await setCache(cacheKey, dbRes.rows);
     res.json(dbRes.rows);
   } catch (err) {
     console.error('Error fetching bookings:', err);
@@ -588,8 +639,10 @@ app.get('/api/duplicates', async (req, res) => {
 
 // 7. GET /api/recovery-summary
 app.get('/api/recovery-summary', async (req, res) => {
-  if (activeCache.recovery) {
-    return res.json(activeCache.recovery);
+  const cacheKey = 'recovery_summary';
+  const cachedData = await getCache(cacheKey);
+  if (cachedData) {
+    return res.json(cachedData);
   }
 
   try {
@@ -630,7 +683,7 @@ app.get('/api/recovery-summary', async (req, res) => {
       bookings: recoveryList
     };
 
-    activeCache.recovery = responsePayload;
+    await setCache(cacheKey, responsePayload);
     res.json(responsePayload);
   } catch (err) {
     console.error('Error fetching recovery summary:', err);
